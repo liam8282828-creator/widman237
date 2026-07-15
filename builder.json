@@ -1,0 +1,16 @@
+{
+  "project": "widman-ios",
+  "platform": "ios",
+  "github": {
+    "owner": "liam8282828-creator",
+    "repo": "widman237"
+  },
+  "ios": {},
+  "flutter": {
+    "watch": {}
+  },
+  "reactNative": {
+    "expo": true
+  },
+  "mobai": {}
+}
