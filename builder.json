@@ -5,7 +5,9 @@
     "owner": "liam8282828-creator",
     "repo": "widman237"
   },
-  "ios": {},
+  "ios": {
+    "path": "ios"
+  },
   "flutter": {
     "watch": {}
   },
