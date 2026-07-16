@@ -47,15 +47,6 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Restore DerivedData cache
-        uses: actions/cache/restore@v4
-        id: cache-deriveddata
-        with:
-          path: DerivedData
-          key: deriveddata-${{ github.run_id }}
-          restore-keys: |
-            deriveddata-
-
       - name: Detect project type
         id: detect
         run: |
@@ -69,79 +60,25 @@ jobs:
             echo "type=native" >> $GITHUB_OUTPUT
           fi
 
-      - name: Setup Flutter
-        if: steps.detect.outputs.type == 'flutter'
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ inputs.flutter_version || '' }}
-          channel: ${{ inputs.flutter_version && 'stable' || 'stable' }}
-          cache: true
-
-      - name: Flutter pub get
-        if: steps.detect.outputs.type == 'flutter'
-        run: flutter pub get
-
       - name: Setup Node.js
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Restore node_modules cache
-        if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
-        uses: actions/cache@v4
-        id: node-modules-cache
-        with:
-          path: node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json', 'yarn.lock') }}
-          restore-keys: |
-            node-modules-${{ runner.os }}-
-
       - name: Install npm dependencies
-        if: (steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo') && steps.node-modules-cache.outputs.cache-hit != 'true'
+        if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
         run: npm install
 
       - name: Expo Prebuild Remoto
         if: steps.detect.outputs.type == 'expo'
         run: npx expo prebuild --platform ios --skip-dependency-validation
 
-      - name: Restore Pods cache
-        uses: actions/cache@v4
-        id: pods-cache
-        with:
-          path: |
-            ios/Pods
-            ~/.cocoapods/repos
-          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
-          restore-keys: |
-            pods-${{ runner.os }}-
-
-      - name: Install certificate and provisioning profile
-        if: inputs.use_signing
-        env:
-          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
-          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+      - name: Install Pods de CocoaPods
         run: |
-          set -e
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          
-          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
-          echo "$IOS_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
-          security import "$CERTIFICATE_PATH" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          
-          PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
-          echo "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE_PATH"
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          PROFILE_UUID=$(security cms -D -i "$PROFILE_PATH" | plutil -extract UUID raw -)
-          cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$PROFILE_UUID".mobileprovision
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          cd ios
+          pod repo update
+          pod install
 
       - name: Build IPA
         env:
@@ -152,20 +89,19 @@ jobs:
           CONFIGURATION: ${{ inputs.configuration }}
         run: |
           set -e
-          
-          # Entrar a la carpeta ios autogenerada
           cd ios
           
           WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -1)
           PROJECT=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
-          
-          if [ -f "Podfile" ]; then
-            echo "Running pod install..."
-            pod install
-            WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -1)
-          fi
-          
           DERIVED_DATA_PATH="${GITHUB_WORKSPACE}/DerivedData"
+          
+          if [ -z "$SCHEME" ]; then
+            if [ -n "$WORKSPACE" ]; then
+              SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+            elif [ -n "$PROJECT" ]; then
+              SCHEME=$(basename "$PROJECT" .xcodeproj)
+            fi
+          fi
           
           echo "Building Expo/React Native iOS ($CONFIGURATION)..."
           BUILD_CMD="xcodebuild"
@@ -173,12 +109,6 @@ jobs:
             BUILD_CMD="$BUILD_CMD -workspace $WORKSPACE"
           elif [ -n "$PROJECT" ]; then
             BUILD_CMD="$BUILD_CMD -project $PROJECT"
-          fi
-          
-          if [ -n "$WORKSPACE" ]; then
-            SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-          elif [ -n "$PROJECT" ]; then
-            SCHEME=$(basename "$PROJECT" .xcodeproj)
           fi
           
           BUILD_CMD="$BUILD_CMD -scheme $SCHEME"
@@ -192,7 +122,6 @@ jobs:
           echo "Running: $BUILD_CMD"
           eval $BUILD_CMD
           
-          # Crear Estructura IPA sin firmar
           APP_PATH=$(find "$DERIVED_DATA_PATH/Build/Products/${CONFIGURATION}-iphoneos" -name "*.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find .app"
@@ -214,16 +143,3 @@ jobs:
           path: build/*.ipa
           retention-days: 7
           if-no-files-found: error
-
-      - name: Save DerivedData cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: DerivedData
-          key: deriveddata-${{ github.run_id }}
-
-      - name: Build summary
-        if: always()
-        run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
